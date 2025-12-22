@@ -1,0 +1,37 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "sal7ny (Web Server)",
+            "request": "launch",
+            "type": "dart",
+            "args": [
+                "-d",
+                "web-server",
+                "--web-port",
+                "5000",
+                "--web-hostname",
+                "localhost"
+            ],
+            "flutterMode": "debug"
+        },
+        {
+            "name": "sal7ny (Chrome)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug"
+        },
+        {
+            "name": "sal7ny (Profile)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "profile"
+        },
+        {
+            "name": "sal7ny (Release)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "release"
+        }
+    ]
+}
