@@ -4,7 +4,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../models/models.dart';
 import '../data/database_service.dart';
-// import 'client/client_home.dart'; // Removed direct link
 import 'client/client_main_layout.dart';
 import 'technician/setup_screen.dart';
 import 'technician/dashboard.dart';
@@ -111,12 +110,13 @@ class _AuthScreenState extends State<AuthScreen> with SingleTickerProviderStateM
       // Wait a bit for auth to complete
       await Future.delayed(const Duration(milliseconds: 500));
       
-      final userId = dbService.getAuthUserId();
+      final String? userId = dbService.getAuthUserId();
       
       debugPrint('🔍 Checking technician profile for user: $userId');
       
       if (userId == null) {
         debugPrint('⚠️ No user ID found, going to setup');
+        if (!mounted) return;
         Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (_) => const TechnicianSetupScreen()),

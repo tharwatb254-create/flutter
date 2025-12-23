@@ -2,12 +2,66 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 import '../data/database_service.dart';
 import '../models/models.dart';
 import 'welcome_screen.dart';
 
-class ProfileScreen extends StatelessWidget {
+class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
+
+  @override
+  State<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends State<ProfileScreen> {
+  bool _isUploading = false;
+
+  Future<void> _pickAndUploadImage(DatabaseService dbService) async {
+    if (_isUploading) return;
+    
+    setState(() => _isUploading = true);
+    
+    try {
+      final picker = ImagePicker();
+      final XFile? image = await picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 50,
+      );
+
+      if (image == null) {
+        setState(() => _isUploading = false);
+        return;
+      }
+
+      await dbService.uploadProfileImage(File(image.path));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم تحديث الصورة بنجاح')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Upload UI Error: $e');
+      if (mounted) {
+        String message = 'فشل الرفع';
+        if (e.toString().contains('Bucket not found')) {
+          message = 'خطأ: لم يتم العثور على Bucket "profile-images" في Supabase';
+        } else if (e.toString().contains('row violates row-level security policy')) {
+          message = 'خطأ: سياسات الأمان (RLS) في Supabase تمنع الرفع. تأكد من إضافة Policy تسمح بالـ INSERT';
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUploading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -68,15 +122,26 @@ class ProfileScreen extends StatelessWidget {
                               ),
                             ],
                           ),
-                          child: CircleAvatar(
-                            radius: 60,
-                            backgroundColor: Colors.white,
-                            child: Icon(
-                              user.role == UserRole.technician
-                                  ? Icons.engineering
-                                  : Icons.person,
-                              size: 60,
-                              color: Theme.of(context).primaryColor,
+                          child: InkWell(
+                            onTap: _isUploading ? null : () => _pickAndUploadImage(dbService),
+                            customBorder: const CircleBorder(),
+                            child: CircleAvatar(
+                              radius: 60,
+                              backgroundColor: Colors.white,
+                              backgroundImage: user.profileImage != null && user.profileImage!.isNotEmpty
+                                  ? NetworkImage(user.profileImage!)
+                                  : null,
+                              child: _isUploading
+                                  ? const CircularProgressIndicator()
+                                  : (user.profileImage == null || user.profileImage!.isEmpty
+                                      ? Icon(
+                                          user.role == UserRole.technician
+                                              ? Icons.engineering
+                                              : Icons.person,
+                                          size: 60,
+                                          color: Theme.of(context).primaryColor,
+                                        )
+                                      : null),
                             ),
                           ),
                         ),

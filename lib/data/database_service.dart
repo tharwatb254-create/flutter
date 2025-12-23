@@ -1,8 +1,8 @@
-
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide User;
+import 'dart:io';
 import '../models/models.dart';
 
 class DatabaseService extends ChangeNotifier {
@@ -17,25 +17,16 @@ class DatabaseService extends ChangeNotifier {
   List<TechnicianModel> get technicians => _technicians;
   List<JobRequest> get requests => _requests;
 
-  StreamSubscription<DocumentSnapshot>? _userProfileSubscription;
-
   DatabaseService() {
-    // Listen to Auth State Changes
     _auth.authStateChanges().listen((User? user) {
       if (user != null) {
-        _subscribeToUserProfile(user.uid);
+        _fetchUserProfile(user.uid);
       } else {
         _currentUser = null;
-        _userProfileSubscription?.cancel();
         _requests = [];
         notifyListeners();
       }
     });
-  }
-
-  // Get Firebase Auth user ID
-  String? getAuthUserId() {
-    return _auth.currentUser?.uid;
   }
 
   // --- Auth Methods ---
@@ -44,6 +35,9 @@ class DatabaseService extends ChangeNotifier {
     try {
       await _auth.signInWithEmailAndPassword(email: email, password: password);
       return true;
+    } on FirebaseAuthException catch (e) {
+      debugPrint('Login Error: ${e.code} - ${e.message}');
+      return false;
     } catch (e) {
       debugPrint('Login Error: $e');
       return false;
@@ -52,11 +46,12 @@ class DatabaseService extends ChangeNotifier {
 
   Future<void> signup(String email, String password, UserRole role, String name) async {
     try {
-      final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
+      final cred = await _auth.createUserWithEmailAndPassword(
+        email: email, 
+        password: password
+      );
+      
       if (cred.user != null) {
-        // Update Firebase Auth Display Name for robustness
-        await cred.user!.updateDisplayName(name);
-        
         final newUser = UserModel(
           id: cred.user!.uid,
           email: email,
@@ -65,141 +60,139 @@ class DatabaseService extends ChangeNotifier {
           name: name,
         );
         
-        // Optimistic update
+        await _firestore.collection('users').doc(cred.user!.uid).set(newUser.toMap());
         _currentUser = newUser;
         notifyListeners();
-        
-        await _firestore.collection('users').doc(cred.user!.uid).set(newUser.toMap());
       }
+    } on FirebaseAuthException catch (e) {
+      String errorMessage = 'حدث خطأ في التسجيل';
+      
+      switch (e.code) {
+        case 'email-already-in-use':
+          errorMessage = 'البريد الإلكتروني مستخدم بالفعل';
+          break;
+        case 'invalid-email':
+          errorMessage = 'البريد الإلكتروني غير صحيح';
+          break;
+        case 'operation-not-allowed':
+          errorMessage = 'التسجيل بالبريد الإلكتروني غير مفعّل. تأكد من تفعيل Email/Password في Firebase Console';
+          break;
+        case 'weak-password':
+          errorMessage = 'كلمة المرور ضعيفة';
+          break;
+        default:
+          errorMessage = 'خطأ: ${e.message}';
+      }
+      
+      throw Exception(errorMessage);
     } catch (e) {
-      throw Exception('Signup failed: $e');
+      debugPrint('Signup Error: $e');
+      throw Exception('فشل التسجيل: $e');
     }
   }
 
   void logout() async {
-    _userProfileSubscription?.cancel();
     await _auth.signOut();
   }
 
-  void _subscribeToUserProfile(String uid) {
-    debugPrint('🔔 Subscribing to user profile: $uid');
-    _userProfileSubscription?.cancel();
-    _userProfileSubscription = _firestore.collection('users').doc(uid).snapshots().listen(
-      (doc) async {
-        debugPrint('📥 User profile snapshot received. Exists: ${doc.exists}');
-        if (doc.exists) {
-          _currentUser = UserModel.fromMap(doc.id, doc.data()!);
-          debugPrint('✅ User loaded: ${_currentUser!.name}, Role: ${_currentUser!.role}');
-          
-          if (_currentUser!.role == UserRole.client) {
-            _fetchRequestsAsClient();
-          } else {
-            _fetchRequestsAsTechnician();
-          }
-          notifyListeners();
-          debugPrint('🔔 notifyListeners() called');
+  Future<void> _fetchUserProfile(String uid) async {
+    try {
+      final doc = await _firestore.collection('users').doc(uid).get();
+      if (doc.exists) {
+        _currentUser = UserModel.fromMap(doc.id, doc.data()!);
+        
+        if (_currentUser!.role == UserRole.client) {
+          _fetchRequestsAsClient();
         } else {
-          debugPrint('⚠️ User document does not exist for UID: $uid');
-          
-          // Create user document from Firebase Auth data
-          final authUser = _auth.currentUser;
-          if (authUser != null) {
-            debugPrint('🔧 Creating user document from Auth data...');
-            
-            // Check if user is in technicians collection to determine role
-            final techDoc = await _firestore.collection('technicians').doc(uid).get();
-            final role = techDoc.exists ? UserRole.technician : UserRole.client;
-            
-            final newUser = UserModel(
-              id: uid,
-              email: authUser.email ?? '',
-              password: '',
-              role: role,
-              name: authUser.displayName ?? 'مستخدم',
-            );
-            
-            try {
-              await _firestore.collection('users').doc(uid).set(newUser.toMap());
-              debugPrint('✅ User document created successfully');
-            } catch (e) {
-              debugPrint('❌ Failed to create user document: $e');
-            }
-          }
+          _fetchRequestsAsTechnician();
         }
-      },
-      onError: (e) {
-        debugPrint('❌ Profile Stream Error: $e');
+        notifyListeners();
       }
-    );
+    } catch (e) {
+      debugPrint('Fetch Profile Error: $e');
+    }
+  }
+
+  // --- Supabase Storage Methods ---
+
+  Future<String?> uploadProfileImage(File imageFile) async {
+    if (_auth.currentUser == null) {
+      debugPrint('❌ Upload Error: No logged-in user found');
+      return null;
+    }
+    
+    try {
+      final userId = _auth.currentUser!.uid;
+      final fileExt = imageFile.path.split('.').last;
+      final fileName = '$userId.$fileExt';
+      debugPrint('🚀 Starting upload for user: $userId, FileName: $fileName');
+
+      // 1. Upload to Supabase
+      final supabase = Supabase.instance.client;
+      debugPrint('📡 Uploading binary to Supabase bucket: profile-images');
+      
+      await supabase.storage.from('profile-images').uploadBinary(
+        fileName,
+        await imageFile.readAsBytes(),
+        fileOptions: const FileOptions(upsert: true),
+      );
+      debugPrint('✅ Supabase upload successful');
+
+      // 2. Get Public URL
+      final String publicUrl = supabase.storage.from('profile-images').getPublicUrl(fileName);
+      debugPrint('🔗 Public URL generated: $publicUrl');
+      
+      // Add cache buster to URL
+      final finalUrl = '$publicUrl?t=${DateTime.now().millisecondsSinceEpoch}';
+
+      // 3. Save to Firebase Auth
+      debugPrint('🔥 Updating Firebase Auth photoURL...');
+      await _auth.currentUser!.updatePhotoURL(finalUrl);
+
+      // 4. Save to Firestore
+      debugPrint('🔥 Updating Firestore users collection...');
+      await _firestore.collection('users').doc(userId).set({
+        'profile_image': finalUrl,
+        'last_updated': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      // 5. Update local state
+      debugPrint('📱 Updating local state...');
+      if (_currentUser != null) {
+        _currentUser = UserModel(
+          id: _currentUser!.id,
+          email: _currentUser!.email,
+          password: '',
+          role: _currentUser!.role,
+          name: _currentUser!.name,
+          profileImage: finalUrl,
+        );
+        notifyListeners();
+      }
+
+      debugPrint('✨ All steps completed successfully!');
+      return finalUrl;
+    } catch (e) {
+      debugPrint('🛑 CRITICAL UPLOAD ERROR: $e');
+      rethrow;
+    }
   }
 
   // --- Technician Methods ---
 
   Future<void> registerTechnicianProfile(String specialty, List<String> slots) async {
-    debugPrint('=== registerTechnicianProfile START ===');
-    debugPrint('Specialty: $specialty');
-    debugPrint('Slots: $slots');
-    
-    // Robust check: Use Auth User if local model is null
-    final authUser = _auth.currentUser;
-    
-    debugPrint('Auth User: ${authUser?.uid ?? "NULL"}');
-    debugPrint('Auth User Email: ${authUser?.email ?? "NULL"}');
-    debugPrint('Current User Model: ${_currentUser?.id ?? "NULL"}');
-    
-    if (authUser == null) {
-      debugPrint('❌ Error: Cannot register technician, user is null');
-      throw Exception('User is not logged in properly');
-    }
-    
-    // Use local model name or auth name or fallback
-    final String name = _currentUser?.name ?? authUser.displayName ?? 'Unknown';
-    
-    debugPrint('Technician Name: $name');
+    if (_currentUser == null) return;
     
     final tech = TechnicianModel(
-      id: authUser.uid, 
-      userId: authUser.uid,
-      name: name,
+      id: _currentUser!.id,
+      userId: _currentUser!.id,
+      name: _currentUser!.name ?? 'Unknown',
       specialty: specialty,
       pricePerHour: 50.0,
       availableSlots: slots,
     );
     
-    debugPrint('Tech Model Created: ${tech.toMap()}');
-    debugPrint('Attempting Firestore write...');
-    
-    try {
-      await _firestore.collection('technicians').doc(tech.id).set(tech.toMap());
-      debugPrint('✅ Firestore write SUCCESSFUL');
-    } catch (e) {
-      debugPrint('❌ Firestore write FAILED: $e');
-      rethrow;
-    }
-    
-    debugPrint('=== registerTechnicianProfile END ===');
-  }
-
-  // Check if technician profile exists
-  Future<bool> checkTechnicianProfileExists(String userId) async {
-    try {
-      final doc = await _firestore.collection('technicians').doc(userId).get();
-      return doc.exists;
-    } catch (e) {
-      debugPrint('Error checking technician profile: $e');
-      return false;
-    }
-  }
-
-  // Changed to fetch from Firestore instead of in-memory filtering
-  Stream<List<TechnicianModel>> streamTechniciansByCategory(String category) {
-    return _firestore
-        .collection('technicians')
-        .where('specialty', isEqualTo: category)
-        .snapshots()
-        .map((snapshot) => snapshot.docs
-            .map((doc) => TechnicianModel.fromMap(doc.id, doc.data()))
-            .toList());
+    await _firestore.collection('technicians').doc(tech.id).set(tech.toMap());
   }
 
   Future<void> fetchTechniciansByCategory(String category) async {
@@ -217,29 +210,19 @@ class DatabaseService extends ChangeNotifier {
     }
   }
   
-  // Helper to get cached technicians (backward compatibility with UI)
   List<TechnicianModel> getTechniciansByCategory(String category) {
-    // In a real app, we should trigger a fetch here or have a stream.
-    // For now, we return the cached list and trigger a fetch.
     fetchTechniciansByCategory(category);
     return _technicians.where((t) => t.specialty == category).toList();
   }
 
   // --- Request Methods ---
   
-  Future<void> createRequest(
-    TechnicianModel tech,
-    String slot, {
-    double? latitude,
-    double? longitude,
-    String? address,
-  }) async {
-    final authUser = _auth.currentUser;
-    if (authUser == null) return;
+  Future<void> createRequest(TechnicianModel tech, String slot, {required double latitude, required double longitude, required String address}) async {
+    if (_currentUser == null) return;
     
     final req = JobRequest(
-      id: '', // Auto-generated by Firestore
-      clientId: authUser.uid,
+      id: '',
+      clientId: _currentUser!.id,
       technicianId: tech.id,
       timestamp: DateTime.now(),
       selectedSlot: slot,
@@ -250,35 +233,70 @@ class DatabaseService extends ChangeNotifier {
     );
     
     await _firestore.collection('requests').add(req.toMap());
-    _fetchRequestsAsClient(); // Refresh
-  }
-
-  Future<void> updateRequestStatus(String requestId, String status) async {
-    await _firestore.collection('requests').doc(requestId).update({'status': status});
-    
-    // Refresh local lists
-    if (_currentUser?.role == UserRole.technician) {
-      await _fetchRequestsAsTechnician();
-    } else {
-      await _fetchRequestsAsClient();
-    }
+    _fetchRequestsAsClient();
   }
 
   Future<void> _fetchRequestsAsClient() async {
     if (_currentUser == null) return;
-    final q = await _firestore.collection('requests').where('clientId', isEqualTo: _currentUser!.id).get();
+    final q = await _firestore.collection('requests')
+        .where('clientId', isEqualTo: _currentUser!.id)
+        .get();
     _requests = q.docs.map((d) => JobRequest.fromMap(d.id, d.data())).toList();
-    // Sort by timestamp descending
-    _requests.sort((a, b) => b.timestamp.compareTo(a.timestamp));
     notifyListeners();
   }
   
   Future<void> _fetchRequestsAsTechnician() async {
     if (_currentUser == null) return;
-    final q = await _firestore.collection('requests').where('technicianId', isEqualTo: _currentUser!.id).get();
+    final q = await _firestore.collection('requests')
+        .where('technicianId', isEqualTo: _currentUser!.id)
+        .get();
     _requests = q.docs.map((d) => JobRequest.fromMap(d.id, d.data())).toList();
-    // Sort by timestamp descending
-    _requests.sort((a, b) => b.timestamp.compareTo(a.timestamp));
     notifyListeners();
+  }
+
+  Future<void> updateRequestStatus(String id, String status) async {
+    try {
+      await _firestore.collection('requests').doc(id).update({
+        'status': status,
+      });
+      
+      // Update local state and notify listeners
+      if (_currentUser != null) {
+        if (_currentUser!.role == UserRole.client) {
+          _fetchRequestsAsClient();
+        } else {
+          _fetchRequestsAsTechnician();
+        }
+      }
+    } catch (e) {
+      debugPrint('Update Status Error: $e');
+    }
+  }
+
+  Stream<List<TechnicianModel>> streamTechniciansByCategory(String categoryName) {
+    debugPrint('📡 Streaming technicians for category: $categoryName');
+    return _firestore.collection('technicians')
+        .where('specialty', isEqualTo: categoryName)
+        .snapshots()
+        .map((snapshot) {
+          debugPrint('✅ Found ${snapshot.docs.length} technicians in $categoryName');
+          return snapshot.docs
+              .map((doc) => TechnicianModel.fromMap(doc.id, doc.data()))
+              .toList();
+        });
+  }
+
+  String? getAuthUserId() {
+    return _auth.currentUser?.uid;
+  }
+
+  Future<bool> checkTechnicianProfileExists(String userId) async {
+    try {
+      final doc = await _firestore.collection('technicians').doc(userId).get();
+      return doc.exists;
+    } catch (e) {
+      debugPrint('Error checking tech profile: $e');
+      return false;
+    }
   }
 }

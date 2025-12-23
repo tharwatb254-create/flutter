@@ -7,6 +7,7 @@ class UserModel {
   final String password;
   final UserRole role;
   final String? name;
+  final String? profileImage;
 
   UserModel({
     required this.id,
@@ -14,6 +15,7 @@ class UserModel {
     required this.password,
     required this.role,
     this.name,
+    this.profileImage,
   });
 
   Map<String, dynamic> toMap() {
@@ -21,6 +23,7 @@ class UserModel {
       'email': email,
       'role': role.name,
       'name': name,
+      'profile_image': profileImage,
     };
   }
 
@@ -31,6 +34,7 @@ class UserModel {
       password: '', // Password is not stored in Firestore
       role: UserRole.values.firstWhere((e) => e.name == map['role'], orElse: () => UserRole.client),
       name: map['name'],
+      profileImage: map['profile_image'],
     );
   }
 }

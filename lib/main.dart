@@ -1,7 +1,7 @@
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'firebase_options.dart';
 import 'theme.dart';
 import 'data/database_service.dart';
@@ -11,23 +11,44 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   try {
-    print("Initializing Firebase...");
-    print("Platform: ${DefaultFirebaseOptions.currentPlatform.runtimeType}");
-    print("API Key: ${DefaultFirebaseOptions.currentPlatform.apiKey}");
-    print("Project ID: ${DefaultFirebaseOptions.currentPlatform.projectId}");
-
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-    print("Firebase Initialized Successfully");
     
+    // START: Supabase Configuration
+    await Supabase.initialize(
+      url: 'https://lrsatkcdrcnrniglmakk.supabase.co',
+      anonKey: 'sb_publishable_dbg9IkVuuovJ6LRRgQb0qg_rV4bNKnl',
+    );
+    // END: Supabase Configuration
+
     runApp(const MyApp());
   } catch (e) {
     debugPrint('Firebase initialization failed: $e');
     runApp(MaterialApp(
       home: Scaffold(
         body: Center(
-          child: Text("Firebase Init Failed:\n$e", style: const TextStyle(color: Colors.red)),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, size: 64, color: Colors.red),
+                const SizedBox(height: 16),
+                Text(
+                  "فشل تشغيل Firebase",
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text("$e", style: const TextStyle(color: Colors.red)),
+                const SizedBox(height: 16),
+                const Text(
+                  "تأكد من:\n1. تفعيل Email/Password في Firebase Console\n2. إعدادات Firebase صحيحة",
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     ));
